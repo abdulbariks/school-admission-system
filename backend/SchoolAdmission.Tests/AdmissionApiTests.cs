@@ -8,6 +8,8 @@ namespace SchoolAdmission.Tests;
 
 public sealed class AdmissionApiTests : IClassFixture<AdmissionFactory>
 {
+    private static long _studentSeed = 20000000000000000L;
+    private static string NewStudentId() => Interlocked.Increment(ref _studentSeed).ToString();
     private readonly HttpClient _client;
     public AdmissionApiTests(AdmissionFactory factory) => _client = factory.CreateClient();
 
@@ -39,7 +41,7 @@ public sealed class AdmissionApiTests : IClassFixture<AdmissionFactory>
     public async Task ConfirmingSameHoldTwice_IsIdempotent()
     {
         var classId = await CreateClass(2);
-        const string student = "20152691234567890";
+        var student = NewStudentId();
         using var created = await Hold(classId, student);
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         using var holdJson = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
@@ -57,11 +59,23 @@ public sealed class AdmissionApiTests : IClassFixture<AdmissionFactory>
     }
 
     [Fact]
+    public async Task StudentCannotHoldTwoDifferentClassesAtOnce()
+    {
+        var firstClass = await CreateClass(2);
+        var secondClass = await CreateClass(2);
+        var student = NewStudentId();
+        using var first = await Hold(firstClass, student);
+        using var second = await Hold(secondClass, student);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+    }
+
+    [Fact]
     public async Task ConcurrentApplications_NeverExceedSeatCapacity()
     {
         const int capacity = 5;
         var classId = await CreateClass(capacity);
-        var requests = Enumerable.Range(0, 40).Select(i => Hold(classId, (20000000000000000L + i).ToString())).ToArray();
+        var requests = Enumerable.Range(0, 40).Select(_ => Hold(classId, NewStudentId())).ToArray();
         var responses = await Task.WhenAll(requests);
         try
         {

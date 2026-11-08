@@ -28,7 +28,7 @@ static object ClassDto(SchoolClass c, int held, int confirmed) => new { id = c.P
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
-app.MapPost("/classes", async (CreateClassRequest req, AdmissionDbContext db, CancellationToken ct) =>
+app.MapPost("/classes", async Task<IResult> (CreateClassRequest req, AdmissionDbContext db, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(req.Name) || req.Name.Trim().Length > 120 || req.TotalSeats is < 1 or > 100000)
         return Error(400, "Enter a class name and a seat limit greater than zero.");
@@ -38,7 +38,7 @@ app.MapPost("/classes", async (CreateClassRequest req, AdmissionDbContext db, Ca
     return Results.Created($"/classes/{entity.PublicId}", new { id = entity.PublicId, name = entity.Name, totalSeats = entity.TotalSeats });
 });
 
-app.MapGet("/classes", async (AdmissionDbContext db, CancellationToken ct) =>
+app.MapGet("/classes", async Task<IResult> (AdmissionDbContext db, CancellationToken ct) =>
 {
     var now = DateTime.UtcNow;
     await ExpireAsync(db, now, ct);
@@ -48,7 +48,7 @@ app.MapGet("/classes", async (AdmissionDbContext db, CancellationToken ct) =>
     return Results.Ok(classes.Select(c => ClassDto(c, stats.Where(s => s.ClassId == c.Id && s.Status == "HELD").Sum(s => s.Count), stats.Where(s => s.ClassId == c.Id && s.Status == "CONFIRMED").Sum(s => s.Count))));
 });
 
-app.MapGet("/classes/{classId}", async (string classId, AdmissionDbContext db, CancellationToken ct) =>
+app.MapGet("/classes/{classId}", async Task<IResult> (string classId, AdmissionDbContext db, CancellationToken ct) =>
 {
     var now = DateTime.UtcNow;
     await ExpireAsync(db, now, ct);
@@ -59,7 +59,7 @@ app.MapGet("/classes/{classId}", async (string classId, AdmissionDbContext db, C
     return Results.Ok(ClassDto(c, held, confirmed));
 });
 
-app.MapPost("/classes/{classId}/holds", async (string classId, HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
+app.MapPost("/classes/{classId}/holds", async Task<IResult> (string classId, HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
 {
     var studentId = request.Headers["X-Student-Id"].FirstOrDefault();
     if (!ValidStudent(studentId)) return Error(400, "Student ID must contain exactly 17 digits.");
@@ -67,12 +67,13 @@ app.MapPost("/classes/{classId}/holds", async (string classId, HttpRequest reque
     var classRows = await db.Classes.Where(c => c.PublicId == classId).ToListAsync(ct);
     var schoolClass = classRows.SingleOrDefault();
     if (schoolClass is null) return Error(404, "Class not found.");
-    // Lock the class row: every allocation for this class serializes across API processes.
+    // Serialize this student across all API processes, then serialize seat allocation for this class.
+    await db.Database.SqlQuery<int>($"SELECT 1 AS \"Value\" FROM (SELECT pg_advisory_xact_lock(hashtext({studentId}))) AS student_lock").ToListAsync(ct);
     await db.Database.SqlQuery<int>($"SELECT 1 AS \"Value\" FROM \"Classes\" WHERE \"Id\" = {schoolClass.Id} FOR UPDATE").ToListAsync(ct);
     var now = DateTime.UtcNow;
     await ExpireAsync(db, now, ct);
-    var duplicate = await db.Holds.AnyAsync(h => h.ClassId == schoolClass.Id && h.StudentId == studentId && (h.Status == "CONFIRMED" || h.Status == "HELD" && h.ExpiresAt > now), ct);
-    if (duplicate) return Error(409, "You already have an active or confirmed application for this class.");
+    var duplicate = await db.Holds.AnyAsync(h => h.StudentId == studentId && (h.Status == "CONFIRMED" || h.Status == "HELD" && h.ExpiresAt > now), ct);
+    if (duplicate) return Error(409, "You already have an active or confirmed application.");
     var held = await db.Holds.CountAsync(h => h.ClassId == schoolClass.Id && h.Status == "HELD" && h.ExpiresAt > now, ct);
     var confirmed = await db.Holds.CountAsync(h => h.ClassId == schoolClass.Id && h.Status == "CONFIRMED", ct);
     if (held + confirmed >= schoolClass.TotalSeats) return Error(409, "Sorry, no seats are currently available.");
@@ -83,7 +84,7 @@ app.MapPost("/classes/{classId}/holds", async (string classId, HttpRequest reque
     return Results.Created($"/holds/{hold.PublicId}", new { holdId = hold.PublicId, classId = schoolClass.PublicId, studentId, status = hold.Status, expiresAt = hold.ExpiresAt });
 });
 
-app.MapGet("/holds/{holdId}", async (string holdId, AdmissionDbContext db, CancellationToken ct) =>
+app.MapGet("/holds/{holdId}", async Task<IResult> (string holdId, AdmissionDbContext db, CancellationToken ct) =>
 {
     var hold = await db.Holds.Include(h => h.Class).SingleOrDefaultAsync(h => h.PublicId == holdId, ct);
     if (hold is null) return Error(404, "Application not found.");
@@ -91,7 +92,7 @@ app.MapGet("/holds/{holdId}", async (string holdId, AdmissionDbContext db, Cance
     return Results.Ok(new { holdId = hold.PublicId, classId = hold.Class!.PublicId, status = hold.Status, expiresAt = hold.ExpiresAt });
 });
 
-app.MapPost("/holds/{holdId}/confirm", async (string holdId, HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
+app.MapPost("/holds/{holdId}/confirm", async Task<IResult> (string holdId, HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
 {
     var studentId = request.Headers["X-Student-Id"].FirstOrDefault();
     if (!ValidStudent(studentId)) return Error(400, "Student ID must contain exactly 17 digits.");
@@ -112,7 +113,7 @@ app.MapPost("/holds/{holdId}/confirm", async (string holdId, HttpRequest request
     return Results.Ok(new { holdId, status = hold.Status });
 });
 
-app.MapDelete("/holds/{holdId}", async (string holdId, HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
+app.MapDelete("/holds/{holdId}", async Task<IResult> (string holdId, HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
 {
     var studentId = request.Headers["X-Student-Id"].FirstOrDefault();
     if (!ValidStudent(studentId)) return Error(400, "Student ID must contain exactly 17 digits.");
@@ -123,7 +124,7 @@ app.MapDelete("/holds/{holdId}", async (string holdId, HttpRequest request, Admi
     return Results.NoContent();
 });
 
-app.MapGet("/me/holds", async (HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
+app.MapGet("/me/holds", async Task<IResult> (HttpRequest request, AdmissionDbContext db, CancellationToken ct) =>
 {
     var studentId = request.Headers["X-Student-Id"].FirstOrDefault();
     if (!ValidStudent(studentId)) return Error(400, "Student ID must contain exactly 17 digits.");
