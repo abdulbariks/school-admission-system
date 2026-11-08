@@ -23,6 +23,7 @@ PostgreSQL data is persisted in the `postgres_data` volume. To stop containers w
 |---|---|---|
 | `DATABASE_URL` | Compose-provided PostgreSQL URL | Backend PostgreSQL connection string |
 | `HOLD_DURATION_SECONDS` | `600` | Seat reservation duration |
+| `POSTGRES_PORT` | `5432` | Host port for PostgreSQL (useful for running integration tests) |
 | `VITE_API_BASE_URL` | `http://localhost:8080` | API origin used by the browser (frontend build argument) |
 
 If `VITE_API_BASE_URL` changes, rebuild the frontend image: `docker compose build frontend`.
@@ -44,12 +45,16 @@ The student ID must be exactly 17 digits. Hold statuses are `HELD`, `CONFIRMED`,
 
 ## Automated backend tests
 
-Tests are PostgreSQL integration tests. Start a disposable PostgreSQL instance, then set `TEST_DATABASE_URL` to its connection string and run:
+Tests are PostgreSQL integration tests. Start the database from Compose, create a separate disposable test database, then set `TEST_DATABASE_URL` and run:
 
 ```bash
+docker compose up -d db
+docker compose exec db createdb -U postgres school_admission_test
 cd backend
-dotnet test SchoolAdmission.Tests/SchoolAdmission.Tests.csproj
+TEST_DATABASE_URL="Host=localhost;Port=5432;Database=school_admission_test;Username=postgres;Password=postgres" dotnet test SchoolAdmission.Tests/SchoolAdmission.Tests.csproj
 ```
+
+In PowerShell, set the variable first with `$env:TEST_DATABASE_URL="Host=localhost;Port=5432;Database=school_admission_test;Username=postgres;Password=postgres"`, then run `dotnet test SchoolAdmission.Tests/SchoolAdmission.Tests.csproj`.
 
 The suite checks class creation, idempotent confirmation, and concurrent reservation requests (40 requests against a five-seat class).
 
