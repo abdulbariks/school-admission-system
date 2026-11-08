@@ -1,0 +1,12 @@
+# Assumptions
+
+1. **Student identity:** The 17-digit birth registration number is the student identifier. No separate parent account or password flow is introduced because the brief explicitly says login is not required.
+2. **Class and shift:** A class/shift is represented by one record (for example, `Class 6 - Morning Shift`) with its own capacity. This matches the supplied API contract, which has a single `name` and `totalSeats` field.
+3. **Reservation duration:** `HOLD_DURATION_SECONDS` controls reservation lifetime and defaults to 600 seconds. Values are bounded to 30–86,400 seconds to prevent accidental zero-length or extremely long reservations.
+4. **Payment:** The payment action is simulated as successful when the user clicks **Pay fee**. No external payment gateway is integrated, as the assignment explicitly says a real gateway is unnecessary.
+5. **Duplicate applications:** A student may have at most one active (`HELD`) or confirmed application for the same class/shift. A cancelled or expired application does not block a new attempt.
+6. **Seat availability:** `HELD` reservations count only until their expiry timestamp. `CONFIRMED` applications permanently consume a seat. Expired reservations are transitioned to `EXPIRED` when the relevant API is accessed; their expiry timestamp also excludes them from seat counts even before that transition.
+7. **Concurrency:** Allocation requests lock the corresponding class row in PostgreSQL inside a transaction. All backend processes use the same database, so requests for a given class serialize across processes, while requests for different classes can proceed independently.
+8. **Admin access:** The brief requests an admin UI but does not specify admin authentication or authorization. The demo exposes the admin workspace without login; production deployment should add authenticated, role-based admin access.
+9. **Persistence:** PostgreSQL uses a named Docker volume so application/container restarts do not erase admission data. `docker compose down -v` intentionally deletes that data.
+10. **Frontend API URL:** `VITE_API_BASE_URL` is a Vite build-time environment variable. Rebuild the frontend image after changing it.
